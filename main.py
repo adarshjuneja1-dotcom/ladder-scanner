@@ -9,159 +9,121 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 
-
 class LadderScannerApp(App):
-
     def build(self):
-        self.running = False
-        self.stocks = [
-            'RELIANCE.NS',
-            'TCS.NS',
-            'INFY.NS',
-            'HDFCBANK.NS',
-            'ICICIBANK.NS',
-            'SBIN.NS',
-            'BHARTIARTL.NS',
-            'ITC.NS',
-            'KOTAKBANK.NS',
-            'LT.NS',
-            'AXISBANK.NS',
-            'TATAMOTORS.NS',
-        ]
+        self.is_scanning = False
         self.base_prices = {}
+        self.ladder_step = 1.0  # 1% move check
 
-        # Main Layout
-        root = BoxLayout(orientation='vertical', padding=15, spacing=10)
+        # Top-level layout
+        root = BoxLayout(orientation='vertical', padding=10, spacing=10)
 
         # Header Title
-        title = Label(
-            text='[b]NSE 1% LADDER SCANNER[/b]',
-            markup=True,
-            font_size='22sp',
-            size_hint_y=None,
-            height=40,
-            color=(0.2, 0.7, 1, 1),
+        title_label = Label(
+            text="Ladder Scanner (NSE 1%)",
+            size_hint_y=0.1,
+            font_size='20sp',
+            bold=True
         )
-        root.add_widget(title)
-
-        # Status Label
-        self.status_lbl = Label(
-            text='Status: Stopped',
-            font_size='16sp',
-            size_hint_y=None,
-            height=30,
-            color=(0.8, 0.8, 0.8, 1),
-        )
-        root.add_widget(self.status_lbl)
+        root.add_widget(title_label)
 
         # Start / Stop Button
-        self.toggle_btn = Button(
-            text='START SCANNER',
+        self.btn_toggle = Button(
+            text="START SCANNER",
+            size_hint_y=0.12,
             font_size='18sp',
-            size_hint_y=None,
-            height=50,
-            background_color=(0.1, 0.7, 0.3, 1),
+            background_color=(0.2, 0.7, 0.3, 1)
         )
-        self.toggle_btn.bind(on_press=self.toggle_scanner)
-        root.add_widget(self.toggle_btn)
+        self.btn_toggle.bind(on_release=self.toggle_scan)
+        root.add_widget(self.btn_toggle)
 
-        # Log Display Area
-        scroll = ScrollView(size_hint=(1, 1))
-        self.log_lbl = Label(
-            text='Logs will appear here once scanner starts...\n',
+        # Scrollable log area for alerts on screen
+        scroll = ScrollView(size_hint_y=0.78)
+        self.log_label = Label(
+            text="Scanner ready. Click START to begin...\n",
             size_hint_y=None,
-            halign='left',
-            valign='top',
-            markup=True,
             font_size='14sp',
+            halign='left',
+            valign='top'
         )
-        self.log_lbl.bind(
-            texture_size=lambda instance, value: setattr(
-                instance, 'height', value[1]
-            )
+        self.log_label.bind(
+            width=lambda *x: setattr(self.log_label, 'text_size', (self.log_label.width, None))
         )
-        self.log_lbl.bind(
-            width=lambda instance, value: setattr(instance, 'text_size', (value, None))
+        self.log_label.bind(
+            texture_size=lambda *x: setattr(self.log_label, 'height', self.log_label.texture_size[1])
         )
-        scroll.add_widget(self.log_lbl)
+        scroll.add_widget(self.log_label)
         root.add_widget(scroll)
 
         return root
 
-    def add_log(self, text):
-        def update_label(dt):
-            self.log_lbl.text = f"{text}\n" + self.log_lbl.text
+    def append_log(self, text):
+        # Clock ke zariye UI safely update hota hai
+        Clock.schedule_once(lambda dt: self._update_ui_text(text))
 
-        Clock.schedule_once(update_label)
+    def _update_ui_text(self, text):
+        t_now = time.strftime("%H:%M:%S")
+        self.log_label.text = f"[{t_now}] {text}\n" + self.log_label.text
 
-    def toggle_scanner(self, instance):
-        if not self.running:
-            self.running = True
-            self.toggle_btn.text = 'STOP SCANNER'
-            self.toggle_btn.background_color = (0.9, 0.2, 0.2, 1)
-            self.status_lbl.text = 'Status: Scanning active...'
-            self.status_lbl.color = (0.2, 1, 0.3, 1)
-            self.add_log(
-                '[color=00ffea]--- Scanner Started Tracking ---[/color]'
-            )
-
-            # Background thread to avoid freezing UI
-            t = threading.Thread(target=self.scan_loop)
-            t.daemon = True
-            t.start()
+    def toggle_scan(self, instance):
+        if not self.is_scanning:
+            self.is_scanning = True
+            self.btn_toggle.text = "STOP SCANNER"
+            self.btn_toggle.background_color = (0.8, 0.2, 0.2, 1)
+            self.append_log("Scanner started. Fetching initial watchlist...")
+            threading.Thread(target=self.run_scanner_loop, daemon=True).start()
         else:
-            self.running = False
-            self.toggle_btn.text = 'START SCANNER'
-            self.toggle_btn.background_color = (0.1, 0.7, 0.3, 1)
-            self.status_lbl.text = 'Status: Stopped'
-            self.status_lbl.color = (0.8, 0.8, 0.8, 1)
-            self.add_log('[color=ff5555]--- Scanner Stopped ---[/color]')
+            self.is_scanning = False
+            self.btn_toggle.text = "START SCANNER"
+            self.btn_toggle.background_color = (0.2, 0.7, 0.3, 1)
+            self.append_log("Scanner stopped.")
 
-    def fetch_price(self, symbol):
-        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                price = data['chart']['result'][0]['meta'][
-                    'regularMarketPrice'
-                ]
-                return float(price)
-        except Exception:
-            return None
+    def run_scanner_loop(self):
+        # Sample active symbols list
+        symbols = [
+            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
+            "SBIN", "BHARTIARTL", "ITC", "LT", "KOTAKBANK"
+        ]
 
-    def scan_loop(self):
-        while self.running:
-            for sym in self.stocks:
-                if not self.running:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+
+        while self.is_scanning:
+            for sym in symbols:
+                if not self.is_scanning:
                     break
+                try:
+                    # Replace with your actual live price endpoint or Yahoo finance ticker URL
+                    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}.NS"
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        data = json.loads(response.read().decode())
+                        meta = data.get('chart', {}).get('result', [{}])[0].get('meta', {})
+                        price = meta.get('regularMarketPrice')
 
-                price = self.fetch_price(sym)
-                if price is not None:
-                    clean_name = sym.replace('.NS', '')
+                        if price:
+                            if sym not in self.base_prices:
+                                self.base_prices[sym] = price
+                                self.append_log(f"Watch: {sym} @ {price:.2f}")
+                            else:
+                                base = self.base_prices[sym]
+                                pct_change = ((price - base) / base) * 100
 
-                    # Set initial baseline price
-                    if sym not in self.base_prices:
-                        self.base_prices[sym] = price
-                        self.add_log(f'Init: {clean_name} @ ₹{price:.2f}')
-                    else:
-                        base = self.base_prices[sym]
-                        pct = ((price - base) / base) * 100
+                                # Trigger alert on 1% move up or down
+                                if abs(pct_change) >= self.ladder_step:
+                                    direction = "UP ▲" if pct_change > 0 else "DOWN ▼"
+                                    alert_msg = f"ALERT: {sym} moved {pct_change:+.2f}% ({direction}) -> Now: {price:.2f}"
+                                    self.append_log(alert_msg)
+                                    # Reset base to current ladder step
+                                    self.base_prices[sym] = price
+                except Exception as e:
+                    pass
 
-                        # Check 1% Movement Ladder
-                        if pct >= 1.0:
-                            msg = f'[b][color=00ff00]▲ 1% UP: {clean_name} @ ₹{price:.2f} (+{pct:.2f}%)[/color][/b]'
-                            self.add_log(msg)
-                            self.base_prices[sym] = price  # Reset ladder baseline
-                        elif pct <= -1.0:
-                            msg = f'[b][color=ff3333]▼ 1% DOWN: {clean_name} @ ₹{price:.2f} ({pct:.2f}%)[/color][/b]'
-                            self.add_log(msg)
-                            self.base_prices[sym] = price  # Reset ladder baseline
+                time.sleep(1)
 
-                time.sleep(1)  # Interval between stock requests
-
-            time.sleep(5)  # Wait before repeating the watchlist
-
-
-if __name__ == '__main__':
-    LadderScannerApp().run()
+            # Pause between scanner cycles
+            for _ in range(15):
+                if not self.is_scanning:
+                    break
+                time.sleep(1)
